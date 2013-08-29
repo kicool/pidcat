@@ -39,6 +39,7 @@ parser.add_argument('--color-gc', dest='color_gc', action='store_true', help='Co
 parser.add_argument('-s', '--serial', dest='device_serial', help='Device serial number (adb -s option)')
 parser.add_argument('-d', '--device', dest='use_device', action='store_true', help='Use first device for log input (adb -d option).')
 parser.add_argument('-e', '--emulator', dest='use_emulator', action='store_true', help='Use first emulator for log input (adb -e option).')
+parser.add_argument('-v', '--verbose', dest='enable_verbose', action='store_true', help='Use -v threadtime for verbose.')
 
 args = parser.parse_args()
 min_level = LOG_LEVELS_MAP[args.min_level]
@@ -105,6 +106,23 @@ def allocate_color(tag):
     LAST_USED.append(color)
   return color
 
+KNOWN_TID = {}
+LAST_USED_TID = [RED, YELLOW, BLUE, MAGENTA, CYAN, GREEN]
+def allocate_thread_color(owner, tid):
+  if owner == tid:
+    return WHITE
+  else:
+    if tid not in KNOWN_TID:
+      color = LAST_USED_TID[0]
+      LAST_USED_TID.remove(color)
+      LAST_USED_TID.append(color)
+      KNOWN_TID[tid] = color
+      return color
+    else:
+      color = KNOWN_TID[tid]
+      return color
+  
+
 
 RULES = {
   # StrictMode policy violation; ~duration=319 ms: android.os.StrictMode$StrictModeDiskWriteViolation: policy=31 violation=1
@@ -137,6 +155,8 @@ PID_DEATH = re.compile(r'^Process ([a-zA-Z0-9._]+) \(pid (\d+)\) has died.?$')
 LOG_LINE  = re.compile(r'^([A-Z])/(.+?)\( *(\d+)\): (.*?)$')
 BUG_LINE  = re.compile(r'.*nativeGetEnabledTags.*')
 
+LOG_LINE_ThreadTime  = re.compile(r'^(\d\d-\d\d) +(\d\d:\d\d:\d\d\.\d\d\d) +(\d+) +(\d+) +([A-Z]) +(.+?): (.*?)$')
+
 adb_command = ['adb']
 if args.device_serial:
   adb_command.extend(['-s', args.device_serial])
@@ -144,8 +164,14 @@ if args.use_device:
   adb_command.append('-d')
 if args.use_emulator:
   adb_command.append('-e')
-adb_command.append('logcat')
+if args.enable_verbose:
+  adb_command.append('logcat')
+  adb_command.append('-v')
+  adb_command.append('threadtime')
+else:
+  adb_command.append('logcat')
 
+print(adb_command)
 adb = subprocess.Popen(adb_command, stdin=PIPE, stdout=PIPE, stderr=PIPE)
 pids = set()
 last_tag = None
@@ -186,11 +212,17 @@ while adb.poll() is None:
   if bug_line is not None:
     continue
 
-  log_line = LOG_LINE.match(line)
+  if args.enable_verbose:
+    log_line = LOG_LINE_ThreadTime.match(line)
+  else:  
+    log_line = LOG_LINE.match(line) 
   if log_line is None:
     continue
 
-  level, tag, owner, message = log_line.groups()
+  if args.enable_verbose:
+    date, time, owner, tid, level, tag, message = log_line.groups()
+  else:  
+    level, tag, owner, message = log_line.groups()
 
   start = PID_START.match(message)
   if start is not None:
@@ -240,6 +272,13 @@ while adb.poll() is None:
   if level not in TAGTYPES: break
   linebuf += TAGTYPES[level]
   linebuf += ' '
+
+  if args.enable_verbose:
+    linebuf += time
+    linebuf += ' '
+    color = allocate_thread_color(owner, tid)
+    linebuf += colorize(tid, fg=color)
+    linebuf += ' '
 
   # format tag message using rules
   for matcher in RULES:
